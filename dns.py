@@ -123,7 +123,7 @@ def main():
         print(f"Probe IP: {result['probe_ip']}")
         print(f"Resolved IPs ({len(result['resolved_ips'])}):")
         for ip in result['resolved_ips']:
-            print(f"  - {ip}")
+            print(f"{ip}")
         print("-" * 80)
     
     # Summary statistics

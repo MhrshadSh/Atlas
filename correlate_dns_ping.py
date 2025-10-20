@@ -76,7 +76,7 @@ def correlate(dns_json_path: str, ping_json_path: str, output_csv_path: str) -> 
 
     with open(ping_json_path, "r") as fin, open(output_csv_path, "w", newline="") as fout:
         writer = csv.writer(fout)
-        writer.writerow(["probe_id", "timestamp", "readable_time", "selected_ip", "in_dns_set", "avg_rtt"]) 
+        writer.writerow(["probe_id", "timestamp", "readable_time", "selected_ip", "in_dns_set", "avg_rtt", "resolved_set"]) 
 
         for line_num, line in enumerate(fin, 1):
             line = line.strip()
@@ -101,6 +101,7 @@ def correlate(dns_json_path: str, ping_json_path: str, output_csv_path: str) -> 
 
             selected_set = find_latest_resolved_set(dns_index.get(int(prb_id), []), int(ts))
             in_dns = dst_addr in selected_set if dst_addr else False
+            resolved_list = sorted(list(selected_set)) if selected_set else []
 
             readable_time = datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -110,7 +111,8 @@ def correlate(dns_json_path: str, ping_json_path: str, output_csv_path: str) -> 
                 readable_time,
                 dst_addr if dst_addr else "",
                 int(in_dns),
-                avg if avg is not None else ""
+                avg if avg is not None else "",
+                json.dumps(resolved_list)
             ])
 
 

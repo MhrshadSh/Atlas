@@ -12,7 +12,7 @@ from typing import Dict, Optional, Tuple, Any, Set
 
 
 IPLOCATION_ENDPOINT = "https://api.ipgeolocation.io/v2/ipgeo"
-ELECTRICITYMAPS_ENDPOINT = "https://api.electricitymaps.com/v3/carbon-intensity/latest"
+ELECTRICITYMAPS_ENDPOINT = "https://api.electricitymaps.com/v3/carbon-intensity"
 
 
 def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: float = 10.0) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -37,27 +37,36 @@ def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: f
         return None, f"Error: {e}"
 
 
-def ip_to_country(ip: str, token:str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def ip_to_loc(ip: str, token:str) -> Tuple[Optional[Dict], Optional[str]]:
     """
-    Returns (latitude, longitude, country_name, error)
+    Returns (location_Data, error)
     """
     url = f"{IPLOCATION_ENDPOINT}?apiKey={urllib.parse.quote(token)}&ip={urllib.parse.quote(ip)}"
     data, err = http_get_json(url)
     if err:
-        return None, None, err
+        return None, err
     if not isinstance(data, dict):
-        return None, None, "invalid JSON"
-    latitude = data["location"].get("latitude")
-    longitude = data["location"].get("longitude")
-    name = data["location"].get("country_name")
-    return (latitude , longitude, name if isinstance(name, str) else None, None)
+        return None, "invalid JSON"
+    if "location" not in data:
+        return None, "missing location field"
+
+    return (data["location"], None)
 
 
-def country_to_carbon_intensity(lat: float, lon: float, token: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+def loc_to_ci(lat: str, lon: str, token: str, time: Optional[str]=None) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
     Query ElectricityMaps for carbon intensity of a geographical location. Returns (data, error).
+    If time is None, fetch latest; otherwise fetch past data for the given ISO 8601 datetime string.
     """
-    query = urllib.parse.urlencode({"lat": lat, "lon": lon})
+    global ELECTRICITYMAPS_ENDPOINT
+
+    if time is None:
+        query = urllib.parse.urlencode({"lat": lat, "lon": lon})
+        ELECTRICITYMAPS_ENDPOINT += "/latest"
+    else:
+        query = urllib.parse.urlencode({"lat": lat, "lon": lon, "datetime": time})
+        ELECTRICITYMAPS_ENDPOINT += "/past"
+    
     url = f"{ELECTRICITYMAPS_ENDPOINT}?{query}"
     headers = {"auth-token": token}
     data, err = http_get_json(url, headers=headers)
@@ -152,7 +161,7 @@ def main() -> None:
             country_name = ip_country_cache[ip].get("country_name")
             ip_country_err = None
         else:
-            code, name, ip_err = ip_to_country(ip)
+            code, name, ip_err = ip_to_loc(ip)
             ip_country_cache[ip] = {"country_code": code, "country_name": name, "error": ip_err}
             country_code, country_name, ip_country_err = code, name, ip_err
             # Rate limiting friendly
@@ -166,7 +175,7 @@ def main() -> None:
                 carbon = country_carbon_cache[country_code]
                 carbon_err = carbon.get("error")
             else:
-                data, err = country_to_carbon_intensity(country_code, args.token)
+                data, err = loc_to_ci(country_code, args.token)
                 if err:
                     country_carbon_cache[country_code] = {"error": err}
                     carbon_err = err

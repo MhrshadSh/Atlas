@@ -104,7 +104,7 @@ def correlate(dns_json_path: str, ping_json_path: str, output_csv_path: str) -> 
             in_dns = dst_addr in selected_set if dst_addr else False
             resolved_list = sorted(list(selected_set)) if selected_set else []
 
-            readable_time = datetime.fromtimestamp(int(ts)).strftime("%Y-%m-%d %H:%M:%S")
+            readable_time = datetime.fromtimestamp(int(ts)).isoformat()
 
             writer.writerow([
                 prb_id,

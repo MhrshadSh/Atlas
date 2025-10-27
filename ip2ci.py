@@ -58,16 +58,16 @@ def loc_to_ci(lat: str, lon: str, token: str, time: Optional[str]=None) -> Tuple
     Query ElectricityMaps for carbon intensity of a geographical location. Returns (data, error).
     If time is None, fetch latest; otherwise fetch past data for the given ISO 8601 datetime string.
     """
-    global ELECTRICITYMAPS_ENDPOINT
+    endpoint = ELECTRICITYMAPS_ENDPOINT
 
     if time is None:
         query = urllib.parse.urlencode({"lat": lat, "lon": lon})
-        ELECTRICITYMAPS_ENDPOINT += "/latest"
+        endpoint += "/latest"
     else:
         query = urllib.parse.urlencode({"lat": lat, "lon": lon, "datetime": time})
-        ELECTRICITYMAPS_ENDPOINT += "/past"
-    
-    url = f"{ELECTRICITYMAPS_ENDPOINT}?{query}"
+        endpoint += "/past"
+
+    url = f"{endpoint}?{query}"
     headers = {"auth-token": token}
     data, err = http_get_json(url, headers=headers)
     if err:
@@ -83,17 +83,18 @@ def load_cache(cache_path: Optional[str]) -> Tuple[Dict[str, Any], Dict[str, Any
     try:
         with open(cache_path, "r", encoding="utf-8") as f:
             blob = json.load(f)
-        return blob.get("ip_country", {}), blob.get("country_carbon", {})
+        return blob.get("ip2loc", {}), blob.get("loc2ci", {})
     except Exception:
         return {}, {}
 
 
-def save_cache(cache_path: Optional[str], ip_country: Dict[str, Any], country_carbon: Dict[str, Any]) -> None:
+def save_cache(cache_path: Optional[str], ip2loc: Dict[str, Any], loc2ci: Dict[str, Any]) -> None:
     if not cache_path:
         return
+    os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
     tmp_path = f"{cache_path}.tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump({"ip_country": ip_country, "country_carbon": country_carbon}, f, ensure_ascii=False, indent=2)
+        json.dump({"ip2loc": ip2loc, "loc2ci": loc2ci}, f, ensure_ascii=False, indent=2)
     os.replace(tmp_path, cache_path)
 
 

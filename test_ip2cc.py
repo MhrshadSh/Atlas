@@ -11,7 +11,9 @@ res = {}
 
 for ip in ip_list:
     loc = ip_to_country(ip,TOKEN)
-    res["ip"] = country_to_carbon_intensity(loc[0], loc[1], EM_TOKEN)[0]
+    lat = float(loc[0])
+    lon = float(loc[1])
+    res[ip] = country_to_carbon_intensity(lat, lon, EM_TOKEN)[0]["carbonIntensity"]
     print(res)
 
 

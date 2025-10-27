@@ -53,12 +53,10 @@ def ip_to_country(ip: str, token:str) -> Tuple[Optional[str], Optional[str], Opt
     return (latitude , longitude, name if isinstance(name, str) else None, None)
 
 
-def country_to_carbon_intensity(lat, lon, token: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+def country_to_carbon_intensity(lat: float, lon: float, token: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
     Query ElectricityMaps for carbon intensity of a geographical location. Returns (data, error).
     """
-    lat = int(lat)
-    lon = int(lon)
     query = urllib.parse.urlencode({"lat": lat, "lon": lon})
     url = f"{ELECTRICITYMAPS_ENDPOINT}?{query}"
     headers = {"auth-token": token}
@@ -67,7 +65,7 @@ def country_to_carbon_intensity(lat, lon, token: str) -> Tuple[Optional[Dict[str
         return None, err
     if not isinstance(data, dict):
         return None, "invalid JSON"
-    return data["carbonIntensity"], None
+    return data, None
 
 
 def load_cache(cache_path: Optional[str]) -> Tuple[Dict[str, Any], Dict[str, Any]]:

@@ -1,6 +1,7 @@
 import json
 import csv
 import sys
+import os
 from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime
 from ip2ci import ip_to_loc, loc_to_ci, load_cache, save_cache
@@ -12,6 +13,7 @@ from dns import extract_probe_resolved_ips
 IPGEO_TOKEN = "052fb585189d4d6fb728f2cabb73a255"
 EM_TOKEN = "ptTcw6cZ9zS07WgBYgXP"
 CACHE_FILE = "./output/ip2ci_cache.json"
+DNS_CACHE_FILE = "./output/dns_extract_cache.json"
 
 # Load caches
 ip2loc_cache, loc2ci_cache = load_cache(CACHE_FILE)
@@ -30,6 +32,40 @@ def build_dns_index(dns_results: Dict[int, Dict[str, Any]]) -> Dict[int, List[Tu
         time_points.sort(key=lambda x: x[0])
         probe_to_measurements[int(prb_id)] = time_points
     return probe_to_measurements
+
+
+def _file_fingerprint(path: str) -> str:
+    """
+    Create a simple fingerprint for a file based on absolute path, size and mtime.
+    """
+    ap = os.path.abspath(path)
+    try:
+        st = os.stat(ap)
+        size = st.st_size
+        mtime = int(st.st_mtime)
+    except FileNotFoundError:
+        size = -1
+        mtime = -1
+    return f"{ap}|{size}|{mtime}"
+
+
+def _dns_cache_load(cache_path: str) -> Dict[str, Any]:
+    try:
+        if not os.path.exists(cache_path):
+            return {}
+        with open(cache_path, "r", encoding="utf-8") as f:
+            blob = json.load(f)
+        return blob if isinstance(blob, dict) else {}
+    except Exception:
+        return {}
+
+
+def _dns_cache_save(cache_path: str, cache_obj: Dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(cache_path) or ".", exist_ok=True)
+    tmp = f"{cache_path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cache_obj, f, ensure_ascii=False)
+    os.replace(tmp, cache_path)
 
 
 def _common_prefix_length(a: int, b: int) -> int:
@@ -143,7 +179,15 @@ def correlate(dns_json_path: str, ping_json_path: str, output_csv_path: str, max
     """
     Correlate DNS and ping measurements and write to CSV.
     """
-    dns_results = extract_probe_resolved_ips(dns_json_path)
+    # Try DNS extraction cache first
+    dns_cache = _dns_cache_load(DNS_CACHE_FILE)
+    dns_key = _file_fingerprint(dns_json_path)
+    if dns_key in dns_cache:
+        dns_results = dns_cache[dns_key]
+    else:
+        dns_results = extract_probe_resolved_ips(dns_json_path)
+        dns_cache[dns_key] = dns_results
+        _dns_cache_save(DNS_CACHE_FILE, dns_cache)
     dns_index = build_dns_index(dns_results)
 
     with open(ping_json_path, "r") as fin, open(output_csv_path, "w", newline="") as fout:

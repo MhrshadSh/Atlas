@@ -13,6 +13,9 @@ IPGEO_TOKEN = "052fb585189d4d6fb728f2cabb73a255"
 EM_TOKEN = "ptTcw6cZ9zS07WgBYgXP"
 CACHE_FILE = "./output/ip2ci_cache.json"
 
+# Load caches
+ip2loc_cache, loc2ci_cache = load_cache(CACHE_FILE)
+
 
 def build_dns_index(dns_results: Dict[int, Dict[str, Any]]) -> Dict[int, List[Tuple[int, set]]]:
     """
@@ -82,61 +85,64 @@ def add_ci_to_row(ip_list: List[str], dst_ip: str, time: Optional[str]) -> Tuple
     - A list of carbon intensities corresponding to each IP in the list.
     - The carbon intensity of the destination IP if it exists in the list; otherwise, -1.
     """
+    global ip2loc_cache, loc2ci_cache
     ci_list = []
     dst_ci = -1.0
-    # Load caches
-    ip2loc_cache, loc2ci_cache = load_cache(CACHE_FILE)
 
     for ip in ip_list:
         # get location
         if ip in ip2loc_cache:
-            loc = ip2loc_cache[ip]
+            loc_data = ip2loc_cache[ip]
         else:
-            loc = ip_to_loc(ip,IPGEO_TOKEN) # loc is (location_Data, error)    
-        if loc[1] is not None:
-            print(f"Error fetching location for IP {ip}: {loc[1]}")
-            ci_list.append(None)
-            continue
-        else:
-            ip2loc_cache[ip] = loc
+            loc_data, loc_err = ip_to_loc(ip,IPGEO_TOKEN) # loc is (location_Data, error)    
+            if loc_err is not None:
+                print(f"Error fetching location for IP {ip}: {loc_err}")
+                ci_list.append(None)
+                continue
+            else:
+                ip2loc_cache[ip] = loc_data
 
-        lat = loc[0].get("latitude")
-        lon = loc[0].get("longitude")
+        lat = loc_data.get("latitude")
+        lon = loc_data.get("longitude")
 
         # get carbon intensity
         if ip in loc2ci_cache:
             cached_ci = loc2ci_cache[ip]
-            cached_time = cached_ci[0].get("datetime")  # Assuming datetime is stored in the cache
+            cached_time = cached_ci.get("datetime")  # Assuming datetime is stored in the cache
             if cached_time and cached_time[:13] == time[:13]:  # Compare until the hour
-                ci = cached_ci
+                ci_data = cached_ci
             else:
-                ci = loc_to_ci(lat, lon, EM_TOKEN, time)  # ci is (data, error), where data is Dict[str, Any]
-                loc2ci_cache[ip] = ci
+                ci_data, ci_err = loc_to_ci(lat, lon, EM_TOKEN, time)  # ci is (data, error), where data is Dict[str, Any]
+                if ci_err is not None:
+                    print(f"Error fetching carbon intensity for IP {ip}: {ci_err}")
+                    ci_list.append(None)
+                    continue
+                else:
+                    loc2ci_cache[ip] = ci_data
         else:
-            ci = loc_to_ci(lat, lon, EM_TOKEN, time)  # ci is (data, error), where data is Dict[str, Any]
-        if ci[1] is not None:
-            print(f"Error fetching carbon intensity for IP {ip}: {ci[1]}")
-            ci_list.append(None)
-            continue
-        else:
-            loc2ci_cache[ip] = ci
+            ci_data, ci_err = loc_to_ci(lat, lon, EM_TOKEN, time)  # ci is (data, error), where data is Dict[str, Any]
+            if ci_err is not None:
+                print(f"Error fetching carbon intensity for IP {ip}: {ci_err}")
+                ci_list.append(None)
+                continue
+            else:
+                loc2ci_cache[ip] = ci_data
 
-        carbon_intensity = ci[0].get("carbonIntensity")
+        carbon_intensity = ci_data.get("carbonIntensity")
         ci_list.append(carbon_intensity)
 
         if ip == dst_ip:
             dst_ci = carbon_intensity
         
-        # Save cache at the end
-    try:
-        save_cache(CACHE_FILE, ip2loc_cache, loc2ci_cache)
-    except Exception as e:
-        sys.stderr.write(f"Failed to write cache: {e}\n")
+    
          
     return ci_list, dst_ci
 
 
-def correlate(dns_json_path: str, ping_json_path: str, output_csv_path: str) -> None:
+def correlate(dns_json_path: str, ping_json_path: str, output_csv_path: str, max_rows: int) -> None:
+    """
+    Correlate DNS and ping measurements and write to CSV.
+    """
     dns_results = extract_probe_resolved_ips(dns_json_path)
     dns_index = build_dns_index(dns_results)
 
@@ -187,6 +193,8 @@ def correlate(dns_json_path: str, ping_json_path: str, output_csv_path: str) -> 
                 json.dumps(ci_list),
                 dst_ci
             ])
+            if line_num >= max_rows:
+                break
 
 
 def main():
@@ -194,9 +202,15 @@ def main():
     dns_json = "RIPE-Atlas-measurement-131389881-1759824000-to-1759910400.json"
     ping_json = "RIPE-Atlas-measurement-131389882-1759788000-to-1759935240.json"
     output_csv = "./output/correlated_ping_dns.csv"
+    max_rows = 2 # Limit number of processed rows for testing
 
-    correlate(dns_json, ping_json, output_csv)
+    correlate(dns_json, ping_json, output_csv, max_rows)
     print(f"Written: {output_csv}")
+    # Save caches at the end
+    try:
+        save_cache(CACHE_FILE, ip2loc_cache, loc2ci_cache)
+    except Exception as e:
+        sys.stderr.write(f"Failed to write cache: {e}\n")
 
 
 if __name__ == "__main__":

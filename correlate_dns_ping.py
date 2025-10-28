@@ -92,11 +92,13 @@ def add_ci_to_row(ip_list: List[str], dst_ip: str, time: Optional[str]) -> Tuple
         if ip in ip2loc_cache:
             loc = ip2loc_cache[ip]
         else:
-            loc = ip_to_loc(ip,IPGEO_TOKEN) # loc is (location_Data, error)
-            ip2loc_cache[ip] = loc
+            loc = ip_to_loc(ip,IPGEO_TOKEN) # loc is (location_Data, error)    
         if loc[1] is not None:
             print(f"Error fetching location for IP {ip}: {loc[1]}")
+            ci_list.append(None)
             continue
+        else:
+            ip2loc_cache[ip] = loc
 
         lat = loc[0].get("latitude")
         lon = loc[0].get("longitude")
@@ -112,10 +114,12 @@ def add_ci_to_row(ip_list: List[str], dst_ip: str, time: Optional[str]) -> Tuple
                 loc2ci_cache[ip] = ci
         else:
             ci = loc_to_ci(lat, lon, EM_TOKEN, time)  # ci is (data, error), where data is Dict[str, Any]
-            loc2ci_cache[ip] = ci
         if ci[1] is not None:
             print(f"Error fetching carbon intensity for IP {ip}: {ci[1]}")
+            ci_list.append(None)
             continue
+        else:
+            loc2ci_cache[ip] = ci
 
         carbon_intensity = ci[0].get("carbonIntensity")
         ci_list.append(carbon_intensity)

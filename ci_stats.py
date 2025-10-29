@@ -18,14 +18,6 @@ def parse_args() -> argparse.Namespace:
         default=str(Path("output") / "correlated_ping_dns.csv"),
         help="Path to correlated CSV (default: output/correlated_ping_dns.csv)",
     )
-    parser.add_argument(
-        "--skip-negative",
-        action="store_true",
-        help=(
-            "Skip rows where selected_ip_ci is negative (unknown). "
-            "If not set, negatives are ignored automatically when ci_list is empty."
-        ),
-    )
     return parser.parse_args()
 
 
@@ -75,8 +67,8 @@ def main() -> int:
             if best_ci is None and (selected_ci is None or selected_ci < 0):
                 continue
 
-            # Optionally skip negative selected CI rows
-            if args.skip_negative and (selected_ci is None or selected_ci < 0):
+            # Always skip rows where selected CI is negative/unknown
+            if selected_ci is None or selected_ci < 0:
                 continue
 
             # Aggregate
@@ -109,7 +101,7 @@ def main() -> int:
     print(f"Absolute savings: {absolute_savings:.2f}")
     print(f"Percent savings: {percent_savings:.2f}%")
 
-    # Extra: averages per used row
+    # Averages per used row
     print(f"Average selected CI per row: {total_selected/num_rows_used:.2f}")
     print(f"Average best-case CI per row: {total_best/num_rows_used:.2f}")
 

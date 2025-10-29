@@ -175,7 +175,7 @@ def add_ci_to_row(ip_list: List[str], dst_ip: str, time: Optional[str]) -> Tuple
     return ci_list, dst_ci
 
 
-def correlate(dns_json_path: str, ping_json_path: str, output_csv_path: str, max_rows: int) -> None:
+def correlate(dns_json_path: str, ping_json_path: str, output_csv_path: str, max_rows: int = 0) -> None:
     """
     Correlate DNS and ping measurements and write to CSV.
     """
@@ -237,7 +237,7 @@ def correlate(dns_json_path: str, ping_json_path: str, output_csv_path: str, max
                 json.dumps(ci_list),
                 dst_ci
             ])
-            if line_num >= max_rows:
+            if max_rows and line_num >= max_rows:
                 break
 
 
@@ -246,7 +246,7 @@ def main():
     dns_json = "RIPE-Atlas-measurement-131389881-1759824000-to-1759910400.json"
     ping_json = "RIPE-Atlas-measurement-131389882-1759788000-to-1759935240.json"
     output_csv = "./output/correlated_ping_dns.csv"
-    max_rows = 2 # Limit number of processed rows for testing
+    max_rows = 0 # Limit number of processed rows for testing
 
     correlate(dns_json, ping_json, output_csv, max_rows)
     print(f"Written: {output_csv}")

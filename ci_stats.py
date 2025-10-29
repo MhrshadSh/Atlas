@@ -4,6 +4,7 @@ import csv
 import sys
 from ast import literal_eval
 from pathlib import Path
+from typing import List, Optional
 
 
 def parse_args() -> argparse.Namespace:
@@ -17,6 +18,18 @@ def parse_args() -> argparse.Namespace:
         "--csv",
         default=str(Path("output") / "correlated_ping_dns.csv"),
         help="Path to correlated CSV (default: output/correlated_ping_dns.csv)",
+    )
+    parser.add_argument(
+        "--write-rtt-list-csv",
+        action="store_true",
+        help=(
+            "Build RTT lists per row using pandas and write a CSV with a new rtt_list column."
+        ),
+    )
+    parser.add_argument(
+        "--out-csv",
+        default=str(Path("output") / "rtt_enriched_correlated_ping_dns.csv"),
+        help="Output CSV path when --write-rtt-list-csv is used.",
     )
     return parser.parse_args()
 
@@ -43,67 +56,112 @@ def main() -> int:
         print(f"Input CSV not found: {csv_path}", file=sys.stderr)
         return 1
 
-    total_selected = 0
-    total_best = 0
-    num_rows_used = 0
-    num_rows_total = 0
+    # Always use pandas
+    try:
+        import pandas as pd  # type: ignore
+    except Exception as e:
+        print(
+            "Pandas is required. Install pandas and retry. "
+            f"Error: {e}",
+            file=sys.stderr,
+        )
+        return 1
 
-    with csv_path.open("r", newline="") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            num_rows_total += 1
+    df = pd.read_csv(csv_path)
 
-            # Parse selected CI
+
+    # Helpers to parse list-like columns (not retained in final output)
+    def parse_list_col(series: "pd.Series"):
+        return series.apply(lambda s: to_list_of_ints(s))
+
+    def parse_ip_list(series: "pd.Series"):
+        def _parse(s: Optional[str]) -> List[str]:
+            if s is None:
+                return []
+            s = str(s).strip()
+            if not s:
+                return []
             try:
-                selected_ci = float(row.get("selected_ip_ci", "-1").strip() or -1)
+                parsed = literal_eval(s)
+                if isinstance(parsed, (list, tuple)):
+                    return [str(x) for x in parsed if x is not None]
             except Exception:
-                selected_ci = -1
+                return []
+            return []
 
-            # Parse list of CI values
-            ci_list = to_list_of_ints(row.get("ci_list"))
-            best_ci = min(ci_list) if ci_list else None
+        return series.apply(_parse)
 
-            # Skip rows without any usable data
-            if best_ci is None and (selected_ci is None or selected_ci < 0):
-                continue
-
-            # Always skip rows where selected CI is negative/unknown
-            if selected_ci is None or selected_ci < 0:
-                continue
-
-            # Aggregate
-            if selected_ci is not None and selected_ci >= 0:
-                total_selected += selected_ci
-            elif best_ci is not None:
-                # If selected is missing/negative but best exists, treat selected as 0 contribution
-                # to keep denominators consistent only when explicitly desired; otherwise
-                # just add best to best total below.
-                pass
-
-            if best_ci is not None:
-                total_best += best_ci
-
-            num_rows_used += 1
-
-    if num_rows_used == 0:
-        print("No usable rows found.")
-        return 0
-
-    absolute_savings = total_selected - total_best
-    percent_savings = (
-        (absolute_savings / total_selected * 100) if total_selected > 0 else 0
+    ci_list_parsed = parse_list_col(df["ci_list"]) if "ci_list" in df else None
+    resolved_set_parsed = (
+        parse_ip_list(df["resolved_set"]) if "resolved_set" in df else None
     )
 
-    print("Carbon intensity aggregation (selected vs best-case)")
-    print(f"Rows considered: {num_rows_used} (of {num_rows_total})")
-    print(f"Total selected CI: {total_selected:.2f}")
-    print(f"Total best-case CI: {total_best:.2f}")
-    print(f"Absolute savings: {absolute_savings:.2f}")
-    print(f"Percent savings: {percent_savings:.2f}%")
+    # Compute CI aggregates via pandas (skip negative selected CI)
+    df_ci = df.copy()
+    df_ci["selected_ip_ci"] = pd.to_numeric(df_ci["selected_ip_ci"], errors="coerce")
+    df_ci = df_ci[df_ci["selected_ip_ci"] >= 0]
+    if ci_list_parsed is not None:
+        df_ci = df_ci.assign(best_ci=ci_list_parsed.apply(lambda xs: min(xs) if xs else None))
+    else:
+        df_ci = df_ci.assign(best_ci=None)
+    sum_selected = df_ci["selected_ip_ci"].sum()
+    sum_best = df_ci["best_ci"].fillna(0).sum()
+    abs_savings = sum_selected - sum_best
+    pct_savings = (abs_savings / sum_selected * 100) if sum_selected > 0 else 0
+    print("Carbon intensity aggregation (selected vs best-case) [pandas]")
+    print(f"Rows considered: {len(df_ci)} (of {len(df)})")
+    print(f"Total selected CI: {sum_selected:.2f}")
+    print(f"Total best-case CI: {sum_best:.2f}")
+    print(f"Absolute savings: {abs_savings:.2f}")
+    print(f"Percent savings: {pct_savings:.2f}%")
+    print(
+        f"Average selected CI per row: {sum_selected/max(len(df_ci),1):.2f}\n"
+        f"Average best-case CI per row: {sum_best/max(len(df_ci),1):.2f}"
+    )
 
-    # Averages per used row
-    print(f"Average selected CI per row: {total_selected/num_rows_used:.2f}")
-    print(f"Average best-case CI per row: {total_best/num_rows_used:.2f}")
+    if args.write_rtt_list_csv:
+        # Build per-IP RTT averages using rows where that IP is selected
+        df_rtt = df.copy()
+        df_rtt["avg_rtt"] = pd.to_numeric(df_rtt["avg_rtt"], errors="coerce")
+        df_rtt = df_rtt[df_rtt["avg_rtt"] >= 0]
+        ip_mean_rtt = (
+            df_rtt.groupby("selected_ip")["avg_rtt"].mean().to_dict()
+            if "selected_ip" in df_rtt
+            else {}
+        )
+
+        # For each row, map resolved_set -> rtt_list by IP mean
+        def build_rtt_list(resolved_ips: List[str], selected_ip: Optional[str], row_avg_rtt: Optional[float]):
+            rtts: List[Optional[float]] = []
+            for ip in resolved_ips:
+                rtt_val = ip_mean_rtt.get(ip)
+                rtts.append(float(rtt_val) if rtt_val is not None else None)
+            # Prefer row's actual avg_rtt for its selected_ip if present
+            if selected_ip and selected_ip in resolved_ips and pd.notna(row_avg_rtt):
+                idx = resolved_ips.index(selected_ip)
+                rtts[idx] = float(row_avg_rtt)
+            return rtts
+
+        resolved_lists = resolved_set_parsed if resolved_set_parsed is not None else [[] for _ in range(len(df))]
+        df = df.assign(
+            rtt_list=[
+                build_rtt_list(resolved_ips, sel_ip, row_rtt)
+                for resolved_ips, sel_ip, row_rtt in zip(
+                    resolved_lists, df.get("selected_ip", []), df.get("avg_rtt", [])
+                )
+            ]
+        )
+
+        # Write output CSV with new rtt_list column without intermediate parsed columns
+        out_path = Path(args.out_csv)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        df_out = df.copy()
+        # Ensure parsed helper columns are not present
+        for col in ("ci_list_parsed", "resolved_set_parsed", "best_ci"):
+            if col in df_out.columns:
+                df_out = df_out.drop(columns=[col])
+        df_out.to_csv(out_path, index=False)
+        print(f"\nWrote RTT-enriched CSV with rtt_list column to: {out_path}")
 
     return 0
 

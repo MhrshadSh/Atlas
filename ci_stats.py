@@ -20,16 +20,21 @@ def parse_args() -> argparse.Namespace:
         help="Path to correlated CSV (default: output/correlated_ping_dns.csv)",
     )
     parser.add_argument(
-        "--write-rtt-list-csv",
+        "--out-csv",  # kept for backward-compat but not used anymore
+        default=str(Path("output") / "rtt_enriched_correlated_ping_dns.csv"),
+        help="(Deprecated) No longer used here.",
+    )
+    parser.add_argument(
+        "--rtt",
         action="store_true",
         help=(
-            "Build RTT lists per row using pandas and write a CSV with a new rtt_list column."
+            "Use RTT-enriched data to compare latency of selected IP vs latency at per-row min CI."
         ),
     )
     parser.add_argument(
-        "--out-csv",
+        "--rtt-csv",
         default=str(Path("output") / "rtt_enriched_correlated_ping_dns.csv"),
-        help="Output CSV path when --write-rtt-list-csv is used.",
+        help="Path to RTT-enriched CSV (default: output/rtt_enriched_correlated_ping_dns.csv)",
     )
     return parser.parse_args()
 
@@ -166,49 +171,95 @@ def main() -> int:
     else:
         print("\n[Hourly minimum CI saving]: Not enough data to compute (no timestamp or ci_list found)")
 
-    if args.write_rtt_list_csv:
-        # Build per-IP RTT averages using rows where that IP is selected
-        df_rtt = df.copy()
+    # Optional: latency comparison using RTT-enriched data
+    if args.rtt:
+        rtt_csv_path = Path(args.rtt_csv)
+        if not rtt_csv_path.exists():
+            print(f"RTT-enriched CSV not found: {rtt_csv_path}", file=sys.stderr)
+            return 1
+        df_rtt = pd.read_csv(rtt_csv_path)
+
+        # Ensure required columns
+        required_cols = ["avg_rtt", "ci_list", "rtt_list"]
+        missing = [c for c in required_cols if c not in df_rtt.columns]
+        if missing:
+            print(f"RTT CSV missing columns: {missing}", file=sys.stderr)
+            return 1
+
+        # Parse lists
+        def parse_ci_list(s: str):
+            try:
+                xs = literal_eval(s) if isinstance(s, str) else s
+                if isinstance(xs, (list, tuple)):
+                    return [int(x) if x is not None else None for x in xs]
+            except Exception:
+                return []
+            return []
+
+        def parse_rtt_list(s: str):
+            try:
+                xs = literal_eval(s) if isinstance(s, str) else s
+                if isinstance(xs, (list, tuple)):
+                    out = []
+                    for x in xs:
+                        if x is None:
+                            out.append(None)
+                        else:
+                            try:
+                                out.append(float(x))
+                            except Exception:
+                                out.append(None)
+                    return out
+            except Exception:
+                return []
+            return []
+
+        ci_lists = df_rtt["ci_list"].apply(parse_ci_list)
+        rtt_lists = df_rtt["rtt_list"].apply(parse_rtt_list)
+
+        # Identify best CI index per row and fetch corresponding RTT
+        import numpy as np
+
+        def best_idx_of_ci(xs):
+            best_val = None
+            best_idx = None
+            for i, v in enumerate(xs):
+                if v is None:
+                    continue
+                if best_val is None or v < best_val:
+                    best_val = v
+                    best_idx = i
+            return best_idx
+
+        # Compute best indices as a plain Python list to avoid float upcasting/NaN
+        best_indices = [best_idx_of_ci(xs) for xs in ci_lists]
+        df_rtt["best_rtt"] = [
+            (r[int(i)] if (i is not None and not pd.isna(i) and isinstance(r, list) and int(i) < len(r)) else None)
+            for r, i in zip(rtt_lists, best_indices)
+        ]
+
         df_rtt["avg_rtt"] = pd.to_numeric(df_rtt["avg_rtt"], errors="coerce")
-        df_rtt = df_rtt[df_rtt["avg_rtt"] >= 0]
-        ip_mean_rtt = (
-            df_rtt.groupby("selected_ip")["avg_rtt"].mean().to_dict()
-            if "selected_ip" in df_rtt
-            else {}
-        )
+        df_latency = df_rtt[df_rtt["best_rtt"].notna() & df_rtt["avg_rtt"].notna()].copy()
+        if len(df_latency) == 0:
+            print("\n[RTT] No usable rows for latency comparison.")
+            return 0
 
-        # For each row, map resolved_set -> rtt_list by IP mean
-        def build_rtt_list(resolved_ips: List[str], selected_ip: Optional[str], row_avg_rtt: Optional[float]):
-            rtts: List[Optional[float]] = []
-            for ip in resolved_ips:
-                rtt_val = ip_mean_rtt.get(ip)
-                rtts.append(float(rtt_val) if rtt_val is not None else None)
-            # Prefer row's actual avg_rtt for its selected_ip if present
-            if selected_ip and selected_ip in resolved_ips and pd.notna(row_avg_rtt):
-                idx = resolved_ips.index(selected_ip)
-                rtts[idx] = float(row_avg_rtt)
-            return rtts
+        mean_selected = float(df_latency["avg_rtt"].mean())
+        mean_best = float(pd.to_numeric(df_latency["best_rtt"], errors="coerce").mean())
+        median_selected = float(df_latency["avg_rtt"].median())
+        median_best = float(pd.to_numeric(df_latency["best_rtt"], errors="coerce").median())
 
-        resolved_lists = resolved_set_parsed if resolved_set_parsed is not None else [[] for _ in range(len(df))]
-        df = df.assign(
-            rtt_list=[
-                build_rtt_list(resolved_ips, sel_ip, row_rtt)
-                for resolved_ips, sel_ip, row_rtt in zip(
-                    resolved_lists, df.get("selected_ip", []), df.get("avg_rtt", [])
-                )
-            ]
-        )
+        pct_mean_change = ((mean_best - mean_selected) / mean_selected * 100.0) if mean_selected > 0 else 0.0
+        pct_median_change = ((median_best - median_selected) / median_selected * 100.0) if median_selected > 0 else 0.0
 
-        # Write output CSV with new rtt_list column without intermediate parsed columns
-        out_path = Path(args.out_csv)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        df_out = df.copy()
-        # Ensure parsed helper columns are not present
-        for col in ("ci_list_parsed", "resolved_set_parsed", "best_ci"):
-            if col in df_out.columns:
-                df_out = df_out.drop(columns=[col])
-        df_out.to_csv(out_path, index=False)
-        print(f"\nWrote RTT-enriched CSV with rtt_list column to: {out_path}")
+        print("\nRTT comparison (selected avg_rtt vs RTT at per-row min CI):")
+        print(f"Rows considered for RTT: {len(df_latency)}")
+        print(f"Mean selected RTT: {mean_selected:.3f} ms")
+        print(f"Mean RTT at min CI: {mean_best:.3f} ms")
+        print(f"Percent change in mean RTT: {pct_mean_change:.2f}%")
+        print(f"Median selected RTT: {median_selected:.3f} ms")
+        print(f"Median RTT at min CI: {median_best:.3f} ms")
+        print(f"Percent change in median RTT: {pct_median_change:.2f}%")
 
     return 0
 

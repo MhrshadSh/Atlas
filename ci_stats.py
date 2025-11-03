@@ -96,7 +96,7 @@ def main() -> int:
         parse_ip_list(df["resolved_set"]) if "resolved_set" in df else None
     )
 
-    # Compute CI aggregates via pandas (skip negative selected CI)
+    # Compute CI aggregates (skip negative selected CI)
     df_ci = df.copy()
     df_ci["selected_ip_ci"] = pd.to_numeric(df_ci["selected_ip_ci"], errors="coerce")
     df_ci = df_ci[df_ci["selected_ip_ci"] >= 0]
@@ -110,14 +110,61 @@ def main() -> int:
     pct_savings = (abs_savings / sum_selected * 100) if sum_selected > 0 else 0
     print("Carbon intensity aggregation (selected vs best-case) [pandas]")
     print(f"Rows considered: {len(df_ci)} (of {len(df)})")
-    print(f"Total selected CI: {sum_selected:.2f}")
-    print(f"Total best-case CI: {sum_best:.2f}")
-    print(f"Absolute savings: {abs_savings:.2f}")
+    # print(f"Total selected CI: {sum_selected:.2f}")
+    # print(f"Total best-case CI: {sum_best:.2f}")
+    # print(f"Absolute savings: {abs_savings:.2f}")
     print(f"Percent savings: {pct_savings:.2f}%")
     print(
         f"Average selected CI per row: {sum_selected/max(len(df_ci),1):.2f}\n"
         f"Average best-case CI per row: {sum_best/max(len(df_ci),1):.2f}"
     )
+
+    # --- Per-hour minimum CI saving: use hour-local min CI (over all ci_list for all rows in the same hour) for each row ---
+    # We'll need to:
+    # - Extract hour from timestamp for each row
+    # - For every hour, find the lowest CI in all ci_list entries that fall in that hour
+    # - For every row, use its hour-global min in aggregate sum
+    
+    per_hour_min_ci = {}  # hour: min overall ci value from all ci_list for that hour
+    if ci_list_parsed is not None and "timestamp" in df_ci:
+        import math
+        # Build a DataFrame {timestamp, ci_list} for rows considered in df_ci
+        df_hour = df_ci[["timestamp"]].copy()
+        df_hour["ci_list"] = ci_list_parsed.loc[df_ci.index].reset_index(drop=True)
+
+        # Hour: integer division by 3600 (assumes timestamp is UNIX epoch seconds)
+        df_hour["hour"] = df_hour["timestamp"].apply(lambda ts: int(ts) // 3600 if not pd.isna(ts) else math.nan)
+        # Build hour->min-ci mapping
+        for hour, group in df_hour.groupby("hour"):
+            # flatten ci_list entries across all rows in this hour
+            flattened = [ci for subl in group["ci_list"] if isinstance(subl, list) for ci in subl]
+            if flattened:
+                per_hour_min_ci[hour] = min(flattened)
+
+    # For each row, look up its per-hour min CI
+    per_row_hour_min = []
+    per_row_hour = []
+    if ci_list_parsed is not None and "timestamp" in df_ci:
+        import math
+        # We use the filtered df_ci, so timestamp and ci_list_parsed are aligned
+        for ts in df_ci["timestamp"]:
+            hour = int(ts) // 3600 if not pd.isna(ts) else None
+            per_row_hour.append(hour)
+            per_row_hour_min.append(per_hour_min_ci[hour] if hour in per_hour_min_ci else None)
+        # Total sum (skip None rows for safety)
+        valid_per_row_hour_min = [ci for ci in per_row_hour_min if ci is not None]
+        sum_per_hour_min = sum(valid_per_row_hour_min)
+        abs_savings_hour = sum_selected - sum_per_hour_min
+        pct_savings_hour = (abs_savings_hour / sum_selected * 100) if sum_selected > 0 else 0
+        # best vs hour-min
+        abs_savings_best_vs_hr = sum_best - sum_per_hour_min
+        pct_savings_best_vs_hr = (abs_savings_best_vs_hr / sum_best * 100) if sum_best > 0 else 0
+        print("\nHourly minimum CI saving (for each row, use min CI among all ci_list in same hour):")
+        print(f"Percent savings vs selected: {pct_savings_hour:.2f}%")
+        print(f"Percent savings vs best-case: {pct_savings_best_vs_hr:.2f}%")
+        print(f"Average per-hour best-case CI per row: {(sum_per_hour_min/max(len(df_ci),1)):.2f}")
+    else:
+        print("\n[Hourly minimum CI saving]: Not enough data to compute (no timestamp or ci_list found)")
 
     if args.write_rtt_list_csv:
         # Build per-IP RTT averages using rows where that IP is selected
